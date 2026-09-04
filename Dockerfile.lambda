@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+#
+# Dockerfile for Jenkinsfile example 06 (ECR + Lambda capstone).
+#
+# Example 06 pushes the image to Amazon ECR and points a "Container image"
+# Lambda function at it, so the image must speak the Lambda Runtime API.
+# The demo app is an unmodified Spring Boot HTTP app, so instead of writing
+# a Lambda handler we drop in the AWS Lambda Web Adapter: it bridges the
+# Lambda Runtime API to a plain HTTP server listening on $PORT.
+#
+# Put this in the app repo root. Because `docker build` looks for `Dockerfile`
+# by default, either rename it to `Dockerfile` for the example-06 job, or set
+# the pipeline's build step to:  docker build -f Dockerfile.lambda -t ... .
+#
+# Prereqs the example already lists: the ECR repo and the Lambda function
+# (created as a Container image function) must exist before the first run.
+
+########################  build stage  ########################
+FROM maven:3.9.11-eclipse-temurin-21 AS build
+WORKDIR /src
+
+COPY pom.xml .
+RUN mvn -B -q dependency:go-offline
+
+COPY src ./src
+RUN mvn -B -q clean package -DskipTests
+
+########################  runtime stage  #####################
+# AWS-provided base image: bundles the Lambda Runtime Interface Client and
+# the Runtime Interface Emulator (so `docker run` works locally too).
+FROM public.ecr.aws/lambda/java:21 AS runtime
+
+# The Lambda Web Adapter, installed as an internal extension.
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.0 \
+     /lambda-adapter /opt/extensions/lambda-adapter
+
+# Tell the adapter where the app listens and when it is ready.
+ENV PORT=8080 \
+    AWS_LWA_READINESS_CHECK_PATH=/ \
+    AWS_LWA_READINESS_CHECK_PORT=8080
+
+COPY --from=build /src/target/*.jar ${LAMBDA_TASK_ROOT}/app.jar
+
+# Override the base image's RIC entrypoint: the adapter starts, then runs this.
+ENTRYPOINT ["java", "-jar", "/var/task/app.jar"]
